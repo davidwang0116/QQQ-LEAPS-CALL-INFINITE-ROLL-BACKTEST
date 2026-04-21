@@ -273,8 +273,7 @@ class BacktestEngine:
     def _roll_position(self, pos: OptionPosition, spot: float,
                        date: pd.Timestamp, trigger: str) -> None:
         old_contracts = pos.contracts
-        proceeds = self._sell_position(pos, spot, date, trigger,
-                                       note=f"roll_{trigger}")
+
         if trigger == "forced_roll":
             expiry = find_roll_target_expiration(date, self.cfg.forced_roll_target_dte)
         else:
@@ -286,19 +285,25 @@ class BacktestEngine:
             spot, date, self.cfg.entry_delta, expiry
         )
 
-        # Target: buy same number of contracts as old position.
-        # Fall back to fewer contracts if insufficient cash.
         ask = self._apply_slippage(mid, "buy")
         per_ct = ask * 100 + self.cfg.commission_per_contract
-        desired_cost = per_ct * old_contracts
 
-        if desired_cost <= self.cash + 1e-6:
-            n_ct = old_contracts
-        else:
-            n_ct = int(self.cash // per_ct)
+        # ── Check affordability BEFORE touching the old position ────────────
+        # proceeds from selling the old position count toward the budget
+        # (we estimate them as current market value minus slippage/commission)
+        bid = self._apply_slippage(pos.current_price, "sell")
+        estimated_proceeds = bid * 100 * old_contracts - self.cfg.commission_per_contract * old_contracts
+        available = self.cash + estimated_proceeds
+
+        n_ct = old_contracts if per_ct * old_contracts <= available + 1e-6 else int(available // per_ct)
 
         if n_ct <= 0:
-            return  # couldn't roll at all; position stays closed, cash kept
+            # Can't afford even 1 new contract — leave position as-is, do nothing
+            return
+
+        # ── Now safe to sell old and open new ───────────────────────────────
+        proceeds = self._sell_position(pos, spot, date, trigger,
+                                       note=f"roll_{trigger}")
 
         total_cost = per_ct * n_ct
         self.cash -= total_cost
@@ -334,7 +339,6 @@ class BacktestEngine:
     # -----------------------------------------------------------------
     # Entry-rule execution
     # -----------------------------------------------------------------
-    '''
     def _execute_entry_rule(self, spot: float, date: pd.Timestamp,
                             trigger: str) -> bool:
         cash_frac = self.cash_pct()
@@ -346,19 +350,6 @@ class BacktestEngine:
             return False
         pos = self._buy_leaps(spot, date, budget, trigger)
         return pos is not None
-    '''
-    # engine.py  _execute_entry_rule 改写
-    def _execute_entry_rule(self, spot, date, trigger):
-        pv = self.portfolio_value()      # 用组合净值
-        cash_frac = self.cash / pv if pv > 0 else 1.0
-        if cash_frac > self.cfg.cash_tier_high:
-            budget = pv * self.cfg.size_high         # 0.10 × 组合值
-        elif cash_frac > self.cfg.cash_tier_low:
-            budget = pv * self.cfg.size_mid
-        else:
-            return False
-        # 如果 budget 仍然买不起一张合约，直接跳过（避免无效信号）
-        return self._buy_leaps(spot, date, min(budget, self.cash), trigger) is not None
 
     # -----------------------------------------------------------------
     # One-day step
@@ -366,7 +357,6 @@ class BacktestEngine:
     def _step(self, date: pd.Timestamp,
               open_px: float, close_px: float,
               prev_close: float) -> None:
-        
         # --- 1) Check gap-down entry at OPEN ---
         entry_took_place = False
         if prev_close > 0:
@@ -378,18 +368,22 @@ class BacktestEngine:
         # --- 2) Intraday: positions move. Re-mark at CLOSE. ---
         self._mark_all(close_px, date)
 
-        # --- 3) Harvest: any position with delta >= harvest threshold ---
-        # Collect first to avoid mutating while iterating
-        to_harvest = [p for p in list(self.positions)
-                      if p.current_delta >= self.cfg.harvest_delta]
-        for p in to_harvest:
-            self._roll_position(p, close_px, date, "harvest_roll")
+        # --- 3) Harvest: positions with delta >= harvest threshold ---
+        # Snapshot IDs first; re-check membership before each roll
+        harvest_ids = {id(p) for p in self.positions
+                       if p.current_delta >= self.cfg.harvest_delta}
+        for p in list(self.positions):
+            if id(p) in harvest_ids and p in self.positions:
+                self._roll_position(p, close_px, date, "harvest_roll")
 
         # --- 4) Forced roll: DTE <= 300 ---
-        to_force = [p for p in list(self.positions)
-                    if (p.expiry - date).days <= self.cfg.forced_roll_dte]
-        for p in to_force:
-            self._roll_position(p, close_px, date, "forced_roll")
+        # Skip positions that can't be rolled (cash too low) rather than
+        # selling them and leaving an orphaned close.
+        force_ids = {id(p) for p in self.positions
+                     if (p.expiry - date).days <= self.cfg.forced_roll_dte}
+        for p in list(self.positions):
+            if id(p) in force_ids and p in self.positions:
+                self._roll_position(p, close_px, date, "forced_roll")
 
         # --- 5) Counter-trend snipe ---
         if not entry_took_place:
