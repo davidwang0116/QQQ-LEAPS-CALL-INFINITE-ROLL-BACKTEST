@@ -319,6 +319,14 @@ Expected columns · 必要列：`Date, Open, High, Low, Close, Adj Close`
 
 ---
 
+## Acknowledgement · 致谢
+ 
+This project was inspired by a video from YouTube creator **天哥复利之道**, whose clear and insightful explanation of the LEAPS Call infinite-roll concept sparked the idea for building this backtest framework.
+ 
+本项目的灵感来源于油管博主**天哥复利之道**的视频。他对 LEAPS Call 无限展期策略清晰而深入的讲解，直接启发了这个回测框架的构建。
+ 
+▶ [天哥复利之道 — LEAPS Call 无限展期策略](https://www.youtube.com/watch?v=Zjy3-FLYJSo)
+
 ## Disclaimer · 免责声明
 
 This project is for **research and educational purposes only**. Past backtest results — even on real historical data — do not guarantee future performance. LEAPS options involve significant leverage and can result in total loss of capital. Nothing in this repository constitutes financial advice.
